@@ -47,7 +47,6 @@ int main(int argc, char** argv) {
 		cob::Application application(database);
 		return application.run();
 	}
-
 	printUsage(argv[0]);
 	return 2;
 }
