@@ -1,0 +1,227 @@
+name: Cross Building C++
+
+on:
+  push:
+    branches:
+      - '**'
+    paths:
+      - 'src/**'
+      - 'xmake.lua'
+      - '.github/workflows/build-cpp.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check-cpp:
+    runs-on: ubuntu-latest
+    outputs:
+      has_sources: ${{ steps.sources.outputs.has_sources }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for C++ source files
+        id: sources
+        shell: bash
+        run: |
+          if find src -type f \( -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' \) -print -quit | grep -q .; then
+            echo "has_sources=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_sources=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check-cpp
+    if: needs.check-cpp.outputs.has_sources == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macos
+            compiler: gcc
+          - os: macos-latest
+            platform: macos
+            compiler: clang
+          - os: ubuntu-latest
+            platform: linux
+            compiler: gcc
+          - os: ubuntu-latest
+            platform: linux
+            compiler: clang
+          - os: windows-latest
+            platform: windows
+            compiler: clang
+          - os: windows-latest
+            platform: windows
+            compiler: gcc
+          - os: windows-latest
+            platform: windows
+            compiler: msvc
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Locate Xmake for MSYS2
+        if: runner.os == 'Windows' && matrix.compiler == 'gcc'
+        shell: pwsh
+        run: |
+          $xmakePath = (Get-Command xmake -ErrorAction Stop).Source
+          Add-Content -Path $env:GITHUB_ENV -Value "XMAKE_EXE=$xmakePath"
+
+      - name: Install Linux compilers
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc g++ clang
+          if [ "${{ matrix.compiler }}" = "gcc" ]; then
+            echo "CC=gcc" >> "$GITHUB_ENV"
+            echo "CXX=g++" >> "$GITHUB_ENV"
+          else
+            echo "CC=clang" >> "$GITHUB_ENV"
+            echo "CXX=clang++" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install macOS GCC
+        if: runner.os == 'macOS' && matrix.compiler == 'gcc'
+        run: |
+          brew install gcc
+          gcc_version="$(brew list --versions gcc | awk '{print $2}' | cut -d. -f1)"
+          compiler_prefix="$(brew --prefix gcc)/bin"
+          test -x "$compiler_prefix/gcc-$gcc_version"
+          test -x "$compiler_prefix/g++-$gcc_version"
+          echo "CC=$compiler_prefix/gcc-$gcc_version" >> "$GITHUB_ENV"
+          echo "CXX=$compiler_prefix/g++-$gcc_version" >> "$GITHUB_ENV"
+
+      - name: Select macOS Clang
+        if: runner.os == 'macOS' && matrix.compiler == 'clang'
+        run: |
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
+
+      - name: Install Windows Clang
+        if: runner.os == 'Windows' && matrix.compiler == 'clang'
+        run: choco install llvm --yes --no-progress
+
+      - name: Select Windows Clang
+        if: runner.os == 'Windows' && matrix.compiler == 'clang'
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_ENV -Value 'CC=clang'
+          Add-Content -Path $env:GITHUB_ENV -Value 'CXX=clang++'
+
+      - name: Install Windows GCC
+        if: runner.os == 'Windows' && matrix.compiler == 'gcc'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc
+
+      - name: Configure Windows GCC path
+        if: runner.os == 'Windows' && matrix.compiler == 'gcc'
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_PATH -Value 'C:\msys64\mingw64\bin'
+          Add-Content -Path $env:GITHUB_ENV -Value 'CC=gcc'
+          Add-Content -Path $env:GITHUB_ENV -Value 'CXX=g++'
+
+      - name: Initialize Visual Studio environment
+        if: runner.os == 'Windows' && (matrix.compiler == 'msvc' || matrix.compiler == 'clang')
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure and build with MSVC
+        if: matrix.compiler == 'msvc'
+        shell: pwsh
+        run: |
+          xmake f -p windows -a x64 --toolchain=msvc -m release -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Configure and build with Windows Clang
+        if: runner.os == 'Windows' && matrix.compiler == 'clang'
+        shell: pwsh
+        run: |
+          xmake f -p windows -a x64 --toolchain=clang --cc=clang --cxx=clang++ -m release -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Configure and build with MinGW GCC
+        if: runner.os == 'Windows' && matrix.compiler == 'gcc'
+        shell: msys2 {0}
+        run: |
+          xmake_exe="$(cygpath -u "$XMAKE_EXE")"
+          "$xmake_exe" f -p windows -a x64 --toolchain=gcc --cc=gcc --cxx=g++ -m release -y
+          "$xmake_exe"
+
+      - name: Configure and build with GCC or Clang
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          xmake f --toolchain=${{ matrix.compiler }} --cc="$CC" --cxx="$CXX" -m release -y
+          xmake
+
+      - name: Stage application
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            binary="$(find build -type f -name 'cob.exe' -print -quit)"
+            extension=.exe
+          else
+            binary="$(find build -type f -name cob -print -quit)"
+            extension=
+          fi
+          test -n "$binary"
+          cp "$binary" "artifacts/cob-${{ matrix.platform }}-${{ matrix.compiler }}$extension"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cob-${{ matrix.platform }}-${{ matrix.compiler }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  detect-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find version in commit message
+        id: version
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          version="$(printf '%s' "$COMMIT_MESSAGE" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: [build, detect-version]
+    if: github.ref == 'refs/heads/main' && needs.detect-version.outputs.version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish C++ GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          if ! gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release create "$VERSION" --title "$VERSION" --generate-notes || gh release view "$VERSION" >/dev/null
+          fi
+          gh release upload "$VERSION" release-assets/* --clobber
