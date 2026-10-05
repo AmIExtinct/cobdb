@@ -39,9 +39,6 @@ jobs:
         include:
           - os: macos-latest
             platform: macos
-            compiler: gcc
-          - os: macos-latest
-            platform: macos
             compiler: clang
           - os: ubuntu-latest
             platform: linux
@@ -87,17 +84,6 @@ jobs:
             echo "CC=clang" >> "$GITHUB_ENV"
             echo "CXX=clang++" >> "$GITHUB_ENV"
           fi
-
-      - name: Install macOS GCC
-        if: runner.os == 'macOS' && matrix.compiler == 'gcc'
-        run: |
-          brew install gcc
-          gcc_version="$(brew list --versions gcc | awk '{print $2}' | cut -d. -f1)"
-          compiler_prefix="$(brew --prefix gcc)/bin"
-          test -x "$compiler_prefix/gcc-$gcc_version"
-          test -x "$compiler_prefix/g++-$gcc_version"
-          echo "CC=$compiler_prefix/gcc-$gcc_version" >> "$GITHUB_ENV"
-          echo "CXX=$compiler_prefix/g++-$gcc_version" >> "$GITHUB_ENV"
 
       - name: Select macOS Clang
         if: runner.os == 'macOS' && matrix.compiler == 'clang'
